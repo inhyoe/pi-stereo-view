@@ -290,6 +290,38 @@ test("custom output follows a known execution owner, while an unowned custom ent
   expect(index.contains(output, "activity")).toBe(false);
 });
 
+test("Answers only shows extension notices in Activity, keeps other unowned content in Conversation, and follows the setting", () => {
+  // Background job and task completions arrive as custom messages (pi.sendMessage with display: true).
+  class CustomMessageComponent extends Text {
+    message = { content: [{ type: "text", text: "NOTICE FIXTURE" }] };
+  }
+  let answers = true;
+  const notice = new CustomMessageComponent("NOTICE FIXTURE", 0, 0);
+  const orphan = new CustomEntryComponent("UNKNOWN OUTPUT", { data: { parentToolCallId: "missing-owner" } });
+  const source = new Container();
+  source.addChild(new Container());
+  source.addChild(new Container());
+  const history = new Container();
+  history.addChild(notice);
+  history.addChild(orphan);
+  source.addChild(history);
+  const index = new NativeContentIndex(source, undefined, () => true, () => answers);
+  const chat = (): Component[] => index.entries("chat").filter(entry => entry.compact).map(entry => entry.source);
+  expect(index.entries("activity").map(entry => entry.source)).toEqual([notice]);
+  expect(chat()).toEqual([orphan]);
+  expect(index.contains(notice, "chat")).toBe(false);
+  expect(index.contains(notice, "activity")).toBe(true);
+  const entry = index.entries("activity")[0];
+  expect(entry.search(80).text).toContain("NOTICE FIXTURE");
+  expect(index.copy(entry, 80)).toContain("NOTICE FIXTURE");
+  // Turning Answers only off returns the notice to Conversation, as in upstream.
+  answers = false;
+  expect(chat()).toEqual([notice, orphan]);
+  expect(index.entries("activity")).toEqual([]);
+  answers = true;
+  expect(index.entries("activity").map(entry => entry.source)).toEqual([notice]);
+});
+
 test("projects deferred native thinking and text after each streaming update without mixing panes", () => {
   // Pi-Bolt defers rebuilding native children until its assistant is rendered.
   class AssistantMessageComponent extends Container {

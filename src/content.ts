@@ -9,6 +9,8 @@ export type ContentKind = "dialogue" | "system" | "thinking" | "tool" | "shell";
 const panes: Record<ContentKind, Pane> = {
   dialogue: "chat", system: "chat", thinking: "activity", tool: "activity", shell: "activity",
 };
+/** The pane an entry is shown in: its own placement when it has one, otherwise its kind's pane. */
+const paneOf = (entry: ContentEntry): Pane => entry.pane ?? panes[entry.kind];
 
 interface NativeContent extends Component {
   text?: string;
@@ -53,6 +55,8 @@ export interface ContentEntry {
   compact: boolean;
   /** A finished assistant answer in Conversation, which Collapse answers may fold. */
   answer?: boolean;
+  /** Placement that overrides the kind's pane: Answers only shows extension notices in Activity. */
+  pane?: Pane;
   search(width: number): Omit<SearchEntry, "source">;
   /** Live execution metadata exists only on calls, never on linked output. */
   tool?(): ToolSummary;
@@ -142,6 +146,8 @@ interface Classified {
   message?: unknown;
   /** Pane of the assistant's text blocks when it was classified. */
   textPane?: Pane;
+  /** Placement of an extension notice when it was classified. */
+  notice?: Pane;
   /** Linked panel inputs: its resolved owner and the panel parts shown as nested calls. */
   parent?: { id: string; owner?: NativeContent; parts?: Component[] };
 }
@@ -151,7 +157,7 @@ const parentOf = (component: NativeContent): unknown => component.entry?.data?.p
 /** The previous entry for the same native block, when every field that renders or searches it is equal. */
 function reuse(entry: ContentEntry, previous: readonly ContentEntry[]): ContentEntry {
   const match = previous.find(candidate => candidate.source === entry.source && candidate.component === entry.component);
-  return match && match.owner === entry.owner && match.kind === entry.kind && match.answer === entry.answer && match.compact === entry.compact &&
+  return match && match.owner === entry.owner && match.kind === entry.kind && match.answer === entry.answer && match.pane === entry.pane && match.compact === entry.compact &&
     sameValues(match.spacing, entry.spacing) ? match : entry;
 }
 
@@ -229,6 +235,14 @@ export class NativeContentIndex {
   }
 
   /**
+   * Where an extension's custom message goes. With Answers only, notices such as background job and task completions
+   * are work reports, so they join Activity; Pi's own warnings and status lines are not custom messages and stay.
+   */
+  private noticePane(component: Component): Pane | undefined {
+    return this.answersOnly() && nameOf(component) === "CustomMessageComponent" ? "activity" : undefined;
+  }
+
+  /**
    * Native history cannot change while Pi lays out one frame, so the panes of a pass
    * share one verification. The pass ends in the next microtask; structural changes
    * and nested-call updates inside it still verify again.
@@ -244,13 +258,13 @@ export class NativeContentIndex {
   entries(pane?: Pane): ContentEntry[] {
     this.refresh();
     if (pane === undefined) return this.content;
-    return this.panes[pane] ??= this.content.filter(entry => panes[entry.kind] === pane);
+    return this.panes[pane] ??= this.content.filter(entry => paneOf(entry) === pane);
   }
 
   /** A rebuilt history cannot retain search hits belonging to removed native owners. */
   contains(source: Component, pane?: Pane): boolean {
     this.refresh();
-    return this.content.some(entry => entry.source === source && (pane === undefined || panes[entry.kind] === pane));
+    return this.content.some(entry => entry.source === source && (pane === undefined || paneOf(entry) === pane));
   }
 
   /** Build clipboard text only on demand, from this branch's current semantic block. */
@@ -280,6 +294,7 @@ export class NativeContentIndex {
   private unchanged(block: Classified): boolean {
     const component = block.component as NativeAssistant & NativeContent;
     if (component.toolCallId !== block.toolCallId || parentOf(component) !== block.parentId || component.customComponent !== block.custom) return false;
+    if (block.notice !== this.noticePane(component)) return false;
     if (block.content) {
       const children = component.contentContainer?.children;
       if (component.contentIsStale === true || children !== block.content || children.length !== block.contentLength ||
@@ -378,6 +393,7 @@ export class NativeContentIndex {
       const adapter = nativeKinds[nameOf(component)];
       const content = component as NativeContent;
       const kind = adapter?.accepts(content) ? adapter.kind : "system";
+      block.notice = this.noticePane(component);
       const parentId = block.parentId;
       const owner = kind === "system" && typeof parentId === "string" ? this.owners.get(parentId) : undefined;
       if (owner && this.expandedPanels.get(component) !== owner) {
@@ -390,7 +406,12 @@ export class NativeContentIndex {
         const adapter = nativeKinds[nameOf(part)];
         const partKind = adapter?.accepts(part as NativeContent) ? adapter.kind : "system";
         block.entries.push(this.entry(part, partKind, [], true, owner));
-      } else block.entries.push(this.entry(component, kind, spacing, true, owner));
+      } else {
+        const entry = this.entry(component, kind, spacing, true, owner);
+        // A notice linked to a known call already follows that call into Activity.
+        if (block.notice && !owner) entry.pane = block.notice;
+        block.entries.push(entry);
+      }
     }
     if (old) block.entries = block.entries.map(entry => reuse(entry, old.entries));
     return block;
