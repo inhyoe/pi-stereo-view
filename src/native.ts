@@ -4,7 +4,7 @@ import { searchText, type SearchEntry, type SearchHit } from "./search.ts";
 import { highlightSearchRows, searchHitRow, type SearchClock } from "./search-highlight.ts";
 import { CompactMessage, type TranscriptTimestamps } from "./timestamps.ts";
 import { NativeContentIndex, callStatus, type ContentEntry, type Pane } from "./content.ts";
-import { CompactTool } from "./compact-tools.ts";
+import { AnswerFold, CompactTool } from "./compact-tools.ts";
 import { toolPresentations, type ToolPresentation } from "./tool-presentation.ts";
 import { ToolStreaming } from "./tool-streaming.ts";
 import { toolGroups, groupSummary, type ToolGroup } from "./tool-groups.ts";
@@ -114,6 +114,9 @@ export class NativeDocument extends Container {
   private readonly indented = new WeakMap<Component, ToolIndent[]>();
   private readonly openGroups = new WeakSet<Component>();
   private readonly openTools = new WeakSet<Component>();
+  private readonly folds = new WeakMap<Component, AnswerFold>();
+  /** Answers the user opened; kept only for this session, keyed by the native message. */
+  private readonly openAnswers = new WeakSet<Component>();
   private groups = new Map<Component, ToolGroup>();
   private present: (name: string) => ToolPresentation = name => ({ name, key: name });
   private toolsKey?: unknown[];
@@ -171,6 +174,7 @@ export class NativeDocument extends Container {
     private readonly beforeExpand: () => void = () => {},
     private readonly buttonStyle: () => "icons" | "text" = () => "text",
     private readonly streaming?: { enabled(): boolean; delay(): number; changed(): void },
+    private readonly collapseAnswers: () => boolean = () => false,
   ) {
     super();
     if (streaming) this.streamer = new ToolStreaming(() => streaming.delay(), () => streaming.changed());
@@ -347,6 +351,31 @@ export class NativeDocument extends Container {
   private toolOpen(source: Component): boolean {
     return this.openTools.has(source) || this.searchTool === source;
   }
+  private folding(entry: ContentEntry): boolean {
+    return entry.answer === true && this.collapseAnswers();
+  }
+  /** A search match opens its answer temporarily; the user's own choice is kept apart from it. */
+  private answerOpen(source: Component): boolean {
+    return this.openAnswers.has(source) || this.searchAnchor?.entry.source === source;
+  }
+  private answerFold(entry: ContentEntry): AnswerFold {
+    const source = entry.source;
+    let fold = this.folds.get(entry.component);
+    if (!fold) {
+      fold = new AnswerFold(entry.component, () => entry.search(this.lastWidth).text, this.theme, () => {
+        if (!this.index.contains(source, this.pane)) return;
+        this.beforeExpand();
+        if (this.answerOpen(source)) {
+          this.openAnswers.delete(source);
+          if (this.searchAnchor?.entry.source === source) this.clearSearch();
+        } else this.openAnswers.add(source);
+        this.frameWidth = undefined;
+      });
+      this.folds.set(entry.component, fold);
+    }
+    fold.show(this.answerOpen(source));
+    return fold;
+  }
   private groupOpen(group: ToolGroup): boolean {
     return this.openGroups.has(group.calls[0].source) || (this.searchTool !== undefined && this.groups.get(this.searchTool) === group);
   }
@@ -403,7 +432,7 @@ export class NativeDocument extends Container {
   }
   private nativeBlock(entry: ContentEntry): CompactMessage {
     const component = entry.source;
-    const routed = entry.component;
+    const routed = this.folding(entry) ? this.answerFold(entry) : entry.component;
     this.clockOwners.set(component, entry.owner);
     let stamped = this.stamped.get(routed);
     if (!stamped) {
@@ -415,6 +444,9 @@ export class NativeDocument extends Container {
         });
       this.stamped.set(routed, stamped);
     }
+    // Switching Collapse answers wraps the same message in another block; release the old one.
+    const previous = this.compactBlocks.get(component);
+    if (previous && previous !== stamped) previous.dispose();
     this.compactBlocks.set(component, stamped);
     return stamped;
   }
@@ -532,7 +564,7 @@ export class NativeDocument extends Container {
     // The first frame and search measure every entry; later frames reuse offscreen rows.
     const virtual = view !== undefined && view.height > 0 && this.built !== undefined;
     const presentation = [this.theme(), display.compact, display.group, this.index.nestedTrees(), this.streamActive, this.showTimestamps(),
-      this.showCopy(), this.buttonStyle(), this.timestampGutter(), this.invalidations];
+      this.showCopy(), this.buttonStyle(), this.timestampGutter(), this.invalidations, this.collapseAnswers()];
     if (!sameValues(presentation, this.presentation)) {
       this.presentation = presentation;
       this.epoch++;
@@ -772,7 +804,7 @@ export class NativeDocument extends Container {
     const children = (routed as Partial<Container>).children;
     const group = this.groups.get(entry.owner);
     out.push(children, (children?.[0] as Partial<Container> | undefined)?.children, entry.spacing.length,
-      this.stamped.get(routed)?.revision, rowed, this.toolOpen(entry.owner),
+      this.stamped.get((this.folding(entry) && this.folds.get(routed)) || routed)?.revision, rowed, this.toolOpen(entry.owner), this.folding(entry) ? this.answerOpen(entry.source) : undefined,
       group?.calls[0].source, group?.calls.length, group && group.calls.length > 1 ? this.groupOpen(group) : undefined,
       tree ? this.index.nested.revision : undefined);
   }

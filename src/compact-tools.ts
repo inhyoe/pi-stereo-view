@@ -1,5 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { stripTerminalSequences, truncateToWidth, visibleWidth, type Component, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { Container, stripTerminalSequences, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { ToolSummary } from "./content.ts";
 
 const singleLine = (text: string): string => stripTerminalSequences(text).replace(/[\x00-\x1f\x7f-\x9f]/g, " ").replace(/\s+/g, " ").trim();
@@ -20,6 +20,57 @@ export function toolDescription(args: unknown): string {
       value === null || typeof value !== "object" ? String(value) : Array.isArray(value) ? "[…]" : "{…}";
     return `${singleLine(key)}: ${singleLine(preview)}`;
   }).join(" ");
+}
+
+/** The first non-empty line of an answer without its Markdown marks; a code fence line is never the title. */
+export function answerTitle(answer: string): string {
+  for (const line of stripTerminalSequences(answer).split(/\r?\n|\r/)) {
+    if (/^\s*(```|~~~)/.test(line)) continue;
+    const title = singleLine(line.replace(/^[\s#>*+-]+|^\s*\d+[.)]\s+/, "").replace(/\*\*|__|`/g, ""));
+    if (title) return title;
+  }
+  return "";
+}
+
+/**
+ * A finished answer folded to its first line, like a compact tool row: `▸` and at most two rows of the title.
+ * While open, a `▾` row precedes the original Markdown body, which is rendered untouched.
+ */
+export class AnswerFold extends Container {
+  private readonly row: Component;
+  private open = false;
+
+  constructor(private readonly body: Component, answer: () => string, theme: () => Theme, toggle: () => void) {
+    super();
+    this.row = {
+      render: width => this.header(width, answer(), theme()),
+      invalidate() {},
+      handleMouse: event => {
+        if (event.button !== "left") return undefined;
+        if (event.type === "press") return { capture: true };
+        if (event.type !== "click") return { handled: true };
+        toggle();
+        return { handled: true, render: true };
+      },
+    };
+    this.children = [this.row];
+  }
+
+  /** Change the children before the next render, so native render caches see a different block. */
+  show(open: boolean): void {
+    if (open === this.open) return;
+    this.open = open;
+    this.children = open ? [this.row, this.body] : [this.row];
+  }
+
+  private header(width: number, answer: string, theme: Theme): string[] {
+    const mark = theme.fg("muted", this.open ? "▾" : "▸");
+    if (this.open) return [truncateToWidth(mark, width)];
+    const inner = Math.max(1, width - 2);
+    const rows = wrapTextWithAnsi(answerTitle(answer), inner);
+    if (rows.length > 2) rows.splice(1, rows.length - 1, truncateToWidth(rows.slice(1).join(" "), inner, "…"));
+    return (rows.length ? rows : [""]).map((row, index) => truncateToWidth((index ? "  " : mark + " ") + row, width));
+  }
 }
 
 interface CompactToolOptions {

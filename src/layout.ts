@@ -377,7 +377,9 @@ export class TranscriptLayout {
         changed: () => this.host?.requestRender(),
       });
     const chatDocument = new NativeDocument(document, "chat", this.timestamps, this.theme, timestampGutter, showTimestamps,
-      () => this.activate("chat"), false, index, this.copy, showCopyButtons, undefined, undefined, undefined, () => this.preferences.buttonStyle);
+      () => this.activate("chat"), false, index, this.copy, showCopyButtons, undefined, undefined,
+      () => { if (this.chat) this.chat.scrollTo(this.chat.scrollTop, { disableFollow: true }); }, () => this.preferences.buttonStyle,
+      undefined, () => this.preferences.answersOnly && this.preferences.collapseAnswers);
     this.documents = { activity: activityDocument, chat: chatDocument };
     this.disposeDocuments = () => {
       activityDocument.dispose();
@@ -807,6 +809,12 @@ export class TranscriptLayout {
   /** Route text written before a tool call to Activity, or restore Pi's own split of Conversation and Activity. */
   setAnswersOnly(answers: boolean): void {
     this.preferences.answersOnly = answers;
+    this.changed();
+  }
+
+  /** Fold each Conversation answer to its first line while Answers only is on. */
+  setCollapseAnswers(collapse: boolean): void {
+    this.preferences.collapseAnswers = collapse;
     this.changed();
   }
 

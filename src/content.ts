@@ -51,6 +51,8 @@ export interface ContentEntry {
   kind: ContentKind;
   spacing: Component[];
   compact: boolean;
+  /** A finished assistant answer in Conversation, which Collapse answers may fold. */
+  answer?: boolean;
   search(width: number): Omit<SearchEntry, "source">;
   /** Live execution metadata exists only on calls, never on linked output. */
   tool?(): ToolSummary;
@@ -149,7 +151,7 @@ const parentOf = (component: NativeContent): unknown => component.entry?.data?.p
 /** The previous entry for the same native block, when every field that renders or searches it is equal. */
 function reuse(entry: ContentEntry, previous: readonly ContentEntry[]): ContentEntry {
   const match = previous.find(candidate => candidate.source === entry.source && candidate.component === entry.component);
-  return match && match.owner === entry.owner && match.kind === entry.kind && match.compact === entry.compact &&
+  return match && match.owner === entry.owner && match.kind === entry.kind && match.answer === entry.answer && match.compact === entry.compact &&
     sameValues(match.spacing, entry.spacing) ? match : entry;
 }
 
@@ -482,14 +484,16 @@ export class NativeContentIndex {
       if (content.children.length !== parts.length || content.children.some((child, index) => child !== parts[index])) content.children = parts;
       result.push({
         source, owner: source, component: view, kind: pane === "activity" ? "thinking" : runs.includes("dialogue") && textPane === "chat" ? "dialogue" : "system", spacing, compact: true,
+        answer: pane === "chat" && runs.includes("dialogue") && textPane === "chat",
         search: width => {
           // Text held back from Conversation is searched and copied with Activity.
           const moved = this.placement.get(source) === "activity";
           const saved = (source.lastMessage?.content ?? [])
             .filter(block => pane === "activity" ? block.type === "thinking" || (moved && block.type === "text") : !moved && block.type === "text")
             .map(block => block.type === "thinking" ? block.thinking ?? "" : block.text ?? "").join("\n\n");
+          const text = (source.lastMessage?.content ?? []).some(block => block.type === "text" && block.text?.trim());
           return {
-            label: pane === "activity" ? "Thinking" : "Assistant",
+            label: pane === "activity" && !(moved && text) ? "Thinking" : "Assistant",
             text: [saved, ...(pane === "chat" ? (this.diagnostics.get(source) ?? []).map(child => searchText(child.render(width).join("\n"))) : [])].filter(Boolean).join("\n\n"),
             reveal: pane === "activity" ? () => source.setHideThinkingBlock(false) : undefined,
           };
