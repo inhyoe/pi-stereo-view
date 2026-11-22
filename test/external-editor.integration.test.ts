@@ -21,7 +21,8 @@ fs.writeFileSync(file, "EDITED PROMPT\\n");
     await writeFile(path.join(agent, "settings.json"), JSON.stringify({
       quietStartup: true, externalEditor: "node editor.mjs",
     }));
-    await writeFile(path.join(agent, "transcript.json"), JSON.stringify({ layout, side: "left", chatWidth: 45 }));
+    // The last history line proves the frame was restored; a folded answer would hide it.
+    await writeFile(path.join(agent, "transcript.json"), JSON.stringify({ layout, side: "left", chatWidth: 45, collapseAnswers: false }));
     const result = await new PiIntegrationTest({
       testName: `external-editor-${layout}-${rows}`, artifactsDir: path.resolve("tmp/test-runs"), cwd,
       piCommand: path.resolve("test/fixtures/pi-host.sh"), isolateUserResources: false,
