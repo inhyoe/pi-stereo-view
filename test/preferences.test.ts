@@ -6,7 +6,7 @@ import { defaults, loadPreferences, savePreferences, type Preferences } from "..
 
 const arrangement = {
   side: "right", chatWidth: 73, layout: "rows", chatHeight: 17,
-  showTimestamps: false, showCopyButtons: false, compactTools: true, groupTools: false, nestedTree: false, streamTools: true, streamDelay: 8, buttonStyle: "icons",
+  showTimestamps: false, showCopyButtons: false, answersOnly: false, collapseAnswers: false, compactTools: true, groupTools: false, nestedTree: false, streamTools: true, streamDelay: 8, buttonStyle: "icons",
 } as const;
 
 test.each(["chat", "activity", null] as const)("ignores legacy temporary state with %s zoom without losing the saved arrangement", async zoom => {
@@ -39,5 +39,47 @@ test("retains automatic sizes and accepts settings with no temporary-state keys"
     const { mode: _mode, zoom: _zoom, ...saved } = defaults;
     await writeFile(file, JSON.stringify(saved));
     expect(await loadPreferences(file)).toEqual(defaults);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("reads a saved file without answersOnly as on and keeps a saved off", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "stereo-preferences-"));
+  const file = path.join(directory, "transcript.json");
+  try {
+    const { answersOnly: _answersOnly, ...legacy } = arrangement;
+    await writeFile(file, JSON.stringify(legacy));
+    expect((await loadPreferences(file)).answersOnly).toBe(true);
+    await writeFile(file, JSON.stringify(arrangement));
+    expect((await loadPreferences(file)).answersOnly).toBe(false);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("reads a saved file without collapseAnswers as on and keeps a saved off", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "stereo-preferences-"));
+  const file = path.join(directory, "transcript.json");
+  try {
+    const { collapseAnswers: _collapseAnswers, ...legacy } = arrangement;
+    await writeFile(file, JSON.stringify(legacy));
+    expect((await loadPreferences(file)).collapseAnswers).toBe(true);
+    await writeFile(file, JSON.stringify(arrangement));
+    expect((await loadPreferences(file)).collapseAnswers).toBe(false);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test.each([null, "true", 1, 0])("rejects a saved collapseAnswers of %j", async collapseAnswers => {
+  const directory = await mkdtemp(path.join(tmpdir(), "stereo-preferences-"));
+  const file = path.join(directory, "transcript.json");
+  try {
+    await writeFile(file, JSON.stringify({ ...arrangement, collapseAnswers }));
+    await expect(loadPreferences(file)).rejects.toThrow("Invalid pi-stereo-view preferences");
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test.each([null, "true", 1, 0])("rejects a saved answersOnly of %j", async answersOnly => {
+  const directory = await mkdtemp(path.join(tmpdir(), "stereo-preferences-"));
+  const file = path.join(directory, "transcript.json");
+  try {
+    await writeFile(file, JSON.stringify({ ...arrangement, answersOnly }));
+    await expect(loadPreferences(file)).rejects.toThrow("Invalid pi-stereo-view preferences");
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

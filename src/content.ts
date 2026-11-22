@@ -9,6 +9,8 @@ export type ContentKind = "dialogue" | "system" | "thinking" | "tool" | "shell";
 const panes: Record<ContentKind, Pane> = {
   dialogue: "chat", system: "chat", thinking: "activity", tool: "activity", shell: "activity",
 };
+/** The pane an entry is shown in: its own placement when it has one, otherwise its kind's pane. */
+const paneOf = (entry: ContentEntry): Pane => entry.pane ?? panes[entry.kind];
 
 interface NativeContent extends Component {
   text?: string;
@@ -27,7 +29,8 @@ interface NativeContent extends Component {
 interface NativeAssistant extends Container {
   contentContainer: Container;
   hasToolCalls: boolean;
-  lastMessage?: { content: { type: string; text?: string; thinking?: string }[] };
+  isStreaming?: boolean;
+  lastMessage?: { content: { type: string; text?: string; thinking?: string }[]; stopReason?: string };
   contentIsStale?: boolean;
   buildContent?(message: NonNullable<NativeAssistant["lastMessage"]>): void;
   isCompacted?(): boolean;
@@ -50,6 +53,10 @@ export interface ContentEntry {
   kind: ContentKind;
   spacing: Component[];
   compact: boolean;
+  /** A finished assistant answer in Conversation, which Collapse answers may fold. */
+  answer?: boolean;
+  /** Placement that overrides the kind's pane: Answers only shows extension notices in Activity. */
+  pane?: Pane;
   search(width: number): Omit<SearchEntry, "source">;
   /** Live execution metadata exists only on calls, never on linked output. */
   tool?(): ToolSummary;
@@ -102,6 +109,16 @@ function assistant(component: Component): NativeAssistant | undefined {
   return native;
 }
 
+/**
+ * With Answers only, an assistant's text is a final answer, shown in Conversation, only when Pi has finished the
+ * message without tool calls. Streaming, tool-using and unknown states, or no state at all, stay in Activity.
+ */
+function answerPane(source: NativeAssistant): Pane {
+  const finished = source.isStreaming !== true && !source.hasToolCalls;
+  const reason = source.lastMessage?.stopReason;
+  return finished && (reason === "stop" || reason === "length" || reason === "error" || reason === "aborted") ? "chat" : "activity";
+}
+
 /** Native rendering creates one child per visible text block or consecutive thinking run. */
 function forEachRun(source: NativeAssistant, visit: (kind: ContentKind) => void): void {
   let thinking = false;
@@ -127,6 +144,10 @@ interface Classified {
   content?: Component[];
   contentLength?: number;
   message?: unknown;
+  /** Pane of the assistant's text blocks when it was classified. */
+  textPane?: Pane;
+  /** Placement of an extension notice when it was classified. */
+  notice?: Pane;
   /** Linked panel inputs: its resolved owner and the panel parts shown as nested calls. */
   parent?: { id: string; owner?: NativeContent; parts?: Component[] };
 }
@@ -136,7 +157,7 @@ const parentOf = (component: NativeContent): unknown => component.entry?.data?.p
 /** The previous entry for the same native block, when every field that renders or searches it is equal. */
 function reuse(entry: ContentEntry, previous: readonly ContentEntry[]): ContentEntry {
   const match = previous.find(candidate => candidate.source === entry.source && candidate.component === entry.component);
-  return match && match.owner === entry.owner && match.kind === entry.kind && match.compact === entry.compact &&
+  return match && match.owner === entry.owner && match.kind === entry.kind && match.answer === entry.answer && match.pane === entry.pane && match.compact === entry.compact &&
     sameValues(match.spacing, entry.spacing) ? match : entry;
 }
 
@@ -197,14 +218,29 @@ export class NativeContentIndex {
   private readonly expandedPanels = new WeakMap<Component, Component>();
   private readonly views = new WeakMap<NativeAssistant, Partial<Record<Pane, Container>>>();
   private readonly diagnostics = new WeakMap<NativeAssistant, Component[]>();
+  private readonly placement = new WeakMap<NativeAssistant, Pane>();
 
-  private pass?: { active: boolean; verified?: { children: Component[]; length: number; last?: Component; parts: number; revision: number; trees: boolean } };
+  private pass?: { active: boolean; verified?: { children: Component[]; length: number; last?: Component; parts: number; revision: number; trees: boolean; answers: boolean } };
 
   /**
    * With `nestedTrees` on, a parented output panel is split into the native parts of its nested calls, which Activity
    * shows as the caller's tree. Off, the panel stays one original entry beside its owner.
    */
-  constructor(private readonly source: Container, readonly nested = new NestedCalls(), readonly nestedTrees: () => boolean = () => true) {}
+  constructor(private readonly source: Container, readonly nested = new NestedCalls(), readonly nestedTrees: () => boolean = () => true,
+    private readonly answersOnly: () => boolean = () => false) {}
+
+  /** Where an assistant's text blocks go: Conversation, as in upstream, unless Answers only holds them back. */
+  private textPane(source: NativeAssistant): Pane {
+    return this.answersOnly() ? answerPane(source) : "chat";
+  }
+
+  /**
+   * Where an extension's custom message goes. With Answers only, notices such as background job and task completions
+   * are work reports, so they join Activity; Pi's own warnings and status lines are not custom messages and stay.
+   */
+  private noticePane(component: Component): Pane | undefined {
+    return this.answersOnly() && nameOf(component) === "CustomMessageComponent" ? "activity" : undefined;
+  }
 
   /**
    * Native history cannot change while Pi lays out one frame, so the panes of a pass
@@ -222,13 +258,13 @@ export class NativeContentIndex {
   entries(pane?: Pane): ContentEntry[] {
     this.refresh();
     if (pane === undefined) return this.content;
-    return this.panes[pane] ??= this.content.filter(entry => panes[entry.kind] === pane);
+    return this.panes[pane] ??= this.content.filter(entry => paneOf(entry) === pane);
   }
 
   /** A rebuilt history cannot retain search hits belonging to removed native owners. */
   contains(source: Component, pane?: Pane): boolean {
     this.refresh();
-    return this.content.some(entry => entry.source === source && (pane === undefined || panes[entry.kind] === pane));
+    return this.content.some(entry => entry.source === source && (pane === undefined || paneOf(entry) === pane));
   }
 
   /** Build clipboard text only on demand, from this branch's current semantic block. */
@@ -249,19 +285,20 @@ export class NativeContentIndex {
     const children = history.children;
     const verified = pass?.verified;
     if (verified && verified.children === children && verified.length === children.length && verified.last === children.at(-1) &&
-      verified.parts === this.source.children.length && verified.revision === this.nested.revision && verified.trees === this.nestedTrees()) return;
+      verified.parts === this.source.children.length && verified.revision === this.nested.revision && verified.trees === this.nestedTrees() && verified.answers === this.answersOnly()) return;
     this.verify(history);
-    if (pass) pass.verified = { children, length: children.length, last: children.at(-1), parts: this.source.children.length, revision: this.nested.revision, trees: this.nestedTrees() };
+    if (pass) pass.verified = { children, length: children.length, last: children.at(-1), parts: this.source.children.length, revision: this.nested.revision, trees: this.nestedTrees(), answers: this.answersOnly() };
   }
 
   /** Whether a classified block still has the native inputs its entries were built from. */
   private unchanged(block: Classified): boolean {
     const component = block.component as NativeAssistant & NativeContent;
     if (component.toolCallId !== block.toolCallId || parentOf(component) !== block.parentId || component.customComponent !== block.custom) return false;
+    if (block.notice !== this.noticePane(component)) return false;
     if (block.content) {
       const children = component.contentContainer?.children;
       if (component.contentIsStale === true || children !== block.content || children.length !== block.contentLength ||
-        component.lastMessage !== block.message) return false;
+        component.lastMessage !== block.message || this.textPane(component) !== block.textPane) return false;
     }
     if (block.parent) {
       const owner = this.owners.get(block.parent.id);
@@ -347,7 +384,8 @@ export class NativeContentIndex {
     const block: Classified = { component, spacing, entries: [], toolCallId: native.toolCallId, parentId: parentOf(native), custom: native.customComponent };
     const message = assistant(component);
     if (message) {
-      block.entries = this.assistantEntries(message, spacing);
+      block.textPane = this.textPane(message);
+      block.entries = this.assistantEntries(message, spacing, block.textPane);
       block.content = message.contentContainer.children;
       block.contentLength = block.content.length;
       block.message = message.lastMessage;
@@ -355,6 +393,7 @@ export class NativeContentIndex {
       const adapter = nativeKinds[nameOf(component)];
       const content = component as NativeContent;
       const kind = adapter?.accepts(content) ? adapter.kind : "system";
+      block.notice = this.noticePane(component);
       const parentId = block.parentId;
       const owner = kind === "system" && typeof parentId === "string" ? this.owners.get(parentId) : undefined;
       if (owner && this.expandedPanels.get(component) !== owner) {
@@ -367,7 +406,12 @@ export class NativeContentIndex {
         const adapter = nativeKinds[nameOf(part)];
         const partKind = adapter?.accepts(part as NativeContent) ? adapter.kind : "system";
         block.entries.push(this.entry(part, partKind, [], true, owner));
-      } else block.entries.push(this.entry(component, kind, spacing, true, owner));
+      } else {
+        const entry = this.entry(component, kind, spacing, true, owner);
+        // A notice linked to a known call already follows that call into Activity.
+        if (block.notice && !owner) entry.pane = block.notice;
+        block.entries.push(entry);
+      }
     }
     if (old) block.entries = block.entries.map(entry => reuse(entry, old.entries));
     return block;
@@ -416,7 +460,7 @@ export class NativeContentIndex {
     } };
   }
 
-  private assistantEntries(source: NativeAssistant, spacing: Component[]): ContentEntry[] {
+  private assistantEntries(source: NativeAssistant, spacing: Component[], textPane: Pane): ContentEntry[] {
     // Native rendering creates one child per visible text block or consecutive thinking run.
     // Match those children to semantic content before projecting; a Text diagnostic is not thinking.
     const runs: ContentKind[] = [];
@@ -431,13 +475,14 @@ export class NativeContentIndex {
       if ((kind === "thinking" && nameOf(child) !== "MouseRegion") || (kind === "dialogue" && nameOf(child) !== "Markdown")) {
         throw new Error("Pi's assistant rendering does not match its content metadata");
       }
-      groups[panes[kind]].push(...padding, child);
+      groups[kind === "dialogue" ? textPane : panes[kind]].push(...padding, child);
       if (kind === "system") diagnostics.push(child);
       padding = [];
     }
     if (slot < runs.length) throw new Error("Pi's assistant content layout is not supported");
     // Entries outlive one classification; search reads the current diagnostics.
     this.diagnostics.set(source, diagnostics);
+    this.placement.set(source, textPane);
     const views = this.views.get(source) ?? {};
     this.views.set(source, views);
     const result: ContentEntry[] = [];
@@ -459,13 +504,17 @@ export class NativeContentIndex {
       // Keep the array of unchanged views: their native render caches compare child identity.
       if (content.children.length !== parts.length || content.children.some((child, index) => child !== parts[index])) content.children = parts;
       result.push({
-        source, owner: source, component: view, kind: pane === "activity" ? "thinking" : runs.includes("dialogue") ? "dialogue" : "system", spacing, compact: true,
+        source, owner: source, component: view, kind: pane === "activity" ? "thinking" : runs.includes("dialogue") && textPane === "chat" ? "dialogue" : "system", spacing, compact: true,
+        answer: pane === "chat" && runs.includes("dialogue") && textPane === "chat",
         search: width => {
-          const kind = pane === "activity" ? "thinking" : "text";
-          const saved = (source.lastMessage?.content ?? []).filter(block => block.type === kind)
-            .map(block => kind === "text" ? block.text ?? "" : block.thinking ?? "").join("\n\n");
+          // Text held back from Conversation is searched and copied with Activity.
+          const moved = this.placement.get(source) === "activity";
+          const saved = (source.lastMessage?.content ?? [])
+            .filter(block => pane === "activity" ? block.type === "thinking" || (moved && block.type === "text") : !moved && block.type === "text")
+            .map(block => block.type === "thinking" ? block.thinking ?? "" : block.text ?? "").join("\n\n");
+          const text = (source.lastMessage?.content ?? []).some(block => block.type === "text" && block.text?.trim());
           return {
-            label: pane === "activity" ? "Thinking" : "Assistant",
+            label: pane === "activity" && !(moved && text) ? "Thinking" : "Assistant",
             text: [saved, ...(pane === "chat" ? (this.diagnostics.get(source) ?? []).map(child => searchText(child.render(width).join("\n"))) : [])].filter(Boolean).join("\n\n"),
             reveal: pane === "activity" ? () => source.setHideThinkingBlock(false) : undefined,
           };

@@ -14,7 +14,7 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true })));
 });
 
-test("starts new settings side by side at 20/80 and retains that ratio on resize", async () => {
+test("starts new settings side by side at 10/90 and retains that ratio on resize", async () => {
   const cwd = await mkdtemp(path.resolve("tmp/default-columns-"));
   const agent = await mkdtemp(path.resolve("tmp/default-agent-"));
   directories.push(cwd, agent);
@@ -29,10 +29,11 @@ test("starts new settings side by side at 20/80 and retains that ratio on resize
   }).run("USER MARKER");
   const frames: Record<string, string[]> = JSON.parse(await readFile(path.join(cwd, "default-layouts.json"), "utf8"));
   await writeFile(path.resolve("tmp/test-runs/default-columns/default-layouts.json"), JSON.stringify(frames));
-  for (const [name, width] of [["columns", 200], ["wider", 400]] as const) {
+  // A tenth of the area, but never under the 24-column minimum.
+  for (const [name, divider] of [["columns", 24], ["wider", 39]] as const) {
     const header = stripTerminalSequences(frames[name][headerRow(frames[name], "Conversation")]);
     expect(header.indexOf("Conversation")).toBeLessThan(header.indexOf("Activity"));
-    expect(header.indexOf("║")).toBe(Math.floor((width - 1) * 0.2));
+    expect(header.indexOf("║")).toBe(divider);
     expect(clean(frames[name])).toContain("ANSWER MARKER");
   }
   expect(headerRow(frames.rows, "Conversation")).toBe(2);
@@ -40,10 +41,10 @@ test("starts new settings side by side at 20/80 and retains that ratio on resize
   expect(clean(frames.rows)).toContain("═".repeat(400));
   for (const name of ["manual", "resized"]) {
     const header = stripTerminalSequences(frames[name][headerRow(frames[name], "Conversation")]);
-    expect(header.indexOf("║"), name).toBe(83);
+    expect(header.indexOf("║"), name).toBe(43);
   }
   expect(JSON.parse(await readFile(path.join(agent, "transcript.json"), "utf8"))).toMatchObject({
-    chatWidth: 83, layout: "columns", chatHeight: null,
+    chatWidth: 43, layout: "columns", chatHeight: null,
   });
 });
 
@@ -127,7 +128,7 @@ test.each(["chat", "activity"])("uses mouse buttons and both dividers without re
     expect(lines.slice(dockBorders[0]).some(line => line.includes("║"))).toBe(false);
   }
   expect(JSON.parse(await readFile(path.join(agent, "transcript.json"), "utf8"))).toEqual({
-    side: "right", chatWidth: 44, layout: "rows", chatHeight: 4, showTimestamps: true, showCopyButtons: true, compactTools: false, groupTools: false, nestedTree: true, streamTools: false, streamDelay: 5, buttonStyle: "icons",
+    side: "right", chatWidth: 44, layout: "rows", chatHeight: 4, showTimestamps: true, showCopyButtons: true, answersOnly: false, collapseAnswers: true, compactTools: false, groupTools: false, nestedTree: true, streamTools: false, streamDelay: 5, buttonStyle: "icons",
   });
   await run("expanded-panel-restart-" + zoom, false);
   const restored: string[] = JSON.parse(await readFile(path.join(cwd, "native-snapshot.json"), "utf8"));
@@ -155,7 +156,7 @@ test("starts both panels in the saved arrangement after disabling split in anoth
     tools: [], conversation: [assistantMessage([text("ANSWER MARKER")])],
   }).run("USER MARKER");
   await run("save-combined-buttons");
-  expect(JSON.parse(await readFile(path.join(agent, "transcript.json"), "utf8"))).toEqual({ ...saved, compactTools: false, groupTools: false, nestedTree: true, streamTools: false, streamDelay: 5, buttonStyle: "icons" });
+  expect(JSON.parse(await readFile(path.join(agent, "transcript.json"), "utf8"))).toEqual({ ...saved, answersOnly: false, collapseAnswers: true, compactTools: false, groupTools: false, nestedTree: true, streamTools: false, streamDelay: 5, buttonStyle: "icons" });
   await run("restore-combined-buttons");
   const frames: { before: string[]; after: string[] } = JSON.parse(await readFile(path.join(cwd, "button-toggle.json"), "utf8"));
   expect(clean(frames.before)).toContain("[ ▣ ]");
@@ -168,7 +169,7 @@ test("starts both panels in the saved arrangement after disabling split in anoth
   expect(clean(frames.after)).toContain("[ ◫ ]");
   expect(clean(frames.after)).toContain("USER MARKER");
   expect(clean(frames.after)).toContain("ANSWER MARKER");
-  expect(JSON.parse(await readFile(path.join(agent, "transcript.json"), "utf8"))).toEqual({ ...saved, compactTools: false, groupTools: false, nestedTree: true, streamTools: false, streamDelay: 5, buttonStyle: "icons" });
+  expect(JSON.parse(await readFile(path.join(agent, "transcript.json"), "utf8"))).toEqual({ ...saved, answersOnly: false, collapseAnswers: true, compactTools: false, groupTools: false, nestedTree: true, streamTools: false, streamDelay: 5, buttonStyle: "icons" });
 });
 
 test("keeps mouse controls active while text and a real tool call stream", async () => {

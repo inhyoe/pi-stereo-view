@@ -91,9 +91,19 @@ export default async function transcript(pi: ExtensionAPI): Promise<void> {
           id: "height", label: "Conversation height",
           description: "Auto grows to half the history area. Drag sets a manual maximum.",
           currentValue: preferences.chatHeight === null ? "auto" : "manual", values: ["auto", "manual"],
-        }], 9, getSettingsListTheme(), (id, value) => {
+        }, {
+          id: "answersOnly", label: "Answers only",
+          description: "Keep only the final answer in Conversation. Text written before a tool call moves to Activity.",
+          currentValue: preferences.answersOnly ? "on" : "off", values: ["on", "off"],
+        }, {
+          id: "collapseAnswers", label: "Collapse answers",
+          description: "With Answers only, show each answer in Conversation as its first line. Click it to read the whole answer.",
+          currentValue: preferences.collapseAnswers ? "on" : "off", values: ["on", "off"],
+        }], 10, getSettingsListTheme(), (id, value) => {
           if (id === "timestamps") layout?.setTimestamps(value === "on");
           else if (id === "copyButtons") layout?.setCopyButtons(value === "on");
+          else if (id === "answersOnly") layout?.setAnswersOnly(value === "on");
+          else if (id === "collapseAnswers") layout?.setCollapseAnswers(value === "on");
           else if (id === "buttonStyle") layout?.setButtonStyle(value === "text" ? "text" : "icons");
           else if (id === "compactTools") layout?.setCompactTools(value === "on");
           else if (id === "groupTools") layout?.setGroupTools(value === "on");

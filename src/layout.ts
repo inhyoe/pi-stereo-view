@@ -368,7 +368,7 @@ export class TranscriptLayout {
     const timestampGutter = (): number => scroll.scrollbar === "auto" ? 1 : 0;
     const showTimestamps = (): boolean => this.preferences.showTimestamps;
     const showCopyButtons = (): boolean => this.preferences.showCopyButtons;
-    const index = new NativeContentIndex(document, this.nested, () => this.preferences.nestedTree);
+    const index = new NativeContentIndex(document, this.nested, () => this.preferences.nestedTree, () => this.preferences.answersOnly);
     const activityDocument = new NativeDocument(document, "activity", this.timestamps, this.theme, timestampGutter, showTimestamps,
       () => this.activate("activity"), false, index, this.copy, showCopyButtons,
       () => ({ compact: this.preferences.compactTools, group: this.preferences.groupTools }), this.getTools,
@@ -377,7 +377,9 @@ export class TranscriptLayout {
         changed: () => this.host?.requestRender(),
       });
     const chatDocument = new NativeDocument(document, "chat", this.timestamps, this.theme, timestampGutter, showTimestamps,
-      () => this.activate("chat"), false, index, this.copy, showCopyButtons, undefined, undefined, undefined, () => this.preferences.buttonStyle);
+      () => this.activate("chat"), false, index, this.copy, showCopyButtons, undefined, undefined,
+      () => { if (this.chat) this.chat.scrollTo(this.chat.scrollTop, { disableFollow: true }); }, () => this.preferences.buttonStyle,
+      undefined, () => this.preferences.answersOnly && this.preferences.collapseAnswers);
     this.documents = { activity: activityDocument, chat: chatDocument };
     this.disposeDocuments = () => {
       activityDocument.dispose();
@@ -804,6 +806,18 @@ export class TranscriptLayout {
     this.changed();
   }
 
+  /** Route text written before a tool call to Activity, or restore Pi's own split of Conversation and Activity. */
+  setAnswersOnly(answers: boolean): void {
+    this.preferences.answersOnly = answers;
+    this.changed();
+  }
+
+  /** Fold each Conversation answer to its first line while Answers only is on. */
+  setCollapseAnswers(collapse: boolean): void {
+    this.preferences.collapseAnswers = collapse;
+    this.changed();
+  }
+
   /** Hide copy icons without disabling the keyboard copy picker. */
   setCopyButtons(show: boolean): void {
     this.preferences.showCopyButtons = show;
@@ -846,7 +860,7 @@ export class TranscriptLayout {
     this.changed();
   }
   private defaultWidth(width: number): number {
-    return Math.max(MIN_CHAT, Math.floor((width - 1) * 0.2));
+    return Math.max(MIN_CHAT, Math.floor((width - 1) * 0.1));
   }
 
   /** Set the requested conversation width without discarding the stacked height. */
