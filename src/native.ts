@@ -342,9 +342,14 @@ export class NativeDocument extends Container {
     const segment = built.order[low];
     const row = event.y - (built.rows[low] ?? 0);
     if (!segment || segment.estimate || row >= segment.lines.length) return undefined;
+    const children = segment.components;
+    // The borrowed routing reads its container under each host's names: Pi's pi-tui uses `children` and
+    // `mouseLayout`, Pi-Bolt's Container uses `ownChildren()` and `rendered`. Both get the heights drawn here.
     const entry = {
-      children: segment.components,
-      mouseLayout: { width: event.width, children: segment.components.map((component, index) => ({ component, height: segment.heights[index] })) },
+      children,
+      ownChildren: () => children,
+      mouseLayout: { width: event.width, children: children.map((component, index) => ({ component, height: segment.heights[index] })) },
+      rendered: { width: event.width, children, heights: segment.heights },
     };
     return Container.prototype.handleMouse.call(entry, { ...event, y: row, height: segment.lines.length });
   }
