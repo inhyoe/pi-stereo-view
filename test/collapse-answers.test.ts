@@ -107,6 +107,30 @@ test.each([
   expect(answerTitle(text)).toBe(title);
 });
 
+/** Pi adds a spacer and one Text line after an answer that ended by truncation, abort or error. */
+const failed = (text: string, reason: string, notice: string): AssistantMessageComponent => {
+  const message = answer(text);
+  message.lastMessage.stopReason = reason;
+  message.contentContainer.addChild(new Spacer(1));
+  message.contentContainer.addChild(new Text(notice, 0, 0));
+  return message;
+};
+
+test.each([
+  ["length", "Response was truncated before completion."],
+  ["aborted", "Operation aborted"],
+  ["error", "Error: 429 Too Many Requests"],
+])("a folded answer that ended with %s keeps Pi's notice under its title", (reason, notice) => {
+  const { render, click } = setup("chat", {}, failed(FULL, reason, notice));
+  expect(render(60).map(line => line.trimEnd())).toEqual(["▸ 만들 수 있습니다.", notice]);
+  click(0, 60);
+  const open = render(60).join("\n");
+  expect(open).toContain("세부 설명");
+  expect(open.split(notice).length - 1).toBe(1);
+  click(0, 60);
+  expect(render(60).map(line => line.trimEnd())).toEqual(["▸ 만들 수 있습니다.", notice]);
+});
+
 test("a one-line answer still folds and shows the same content when opened", () => {
   const { render, click } = setup("chat", {}, answer("한 줄뿐입니다."));
   expect(render()).toEqual(["▸ 한 줄뿐입니다."]);

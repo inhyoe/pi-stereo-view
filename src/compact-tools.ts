@@ -32,8 +32,14 @@ export function answerTitle(answer: string): string {
   return "";
 }
 
+/** A folded body may name native lines that stay under the title, such as Pi's truncation, abort or error notice. */
+export interface FoldableBody extends Component {
+  foldNotes?(): Component[];
+}
+
 /**
  * A finished answer folded to its first line, like a compact tool row: `▸` and at most two rows of the title.
+ * Pi's notice of an answer that did not finish normally stays visible under the folded title.
  * While open, a `▾` row precedes the original Markdown body, which is rendered untouched.
  */
 export class AnswerFold extends Container {
@@ -58,9 +64,10 @@ export class AnswerFold extends Container {
 
   /** Change the children before the next render, so native render caches see a different block. */
   show(open: boolean): void {
-    if (open === this.open) return;
+    const children = open ? [this.row, this.body] : [this.row, ...((this.body as FoldableBody).foldNotes?.() ?? [])];
+    if (open === this.open && children.length === this.children.length && children.every((child, index) => child === this.children[index])) return;
     this.open = open;
-    this.children = open ? [this.row, this.body] : [this.row];
+    this.children = children;
   }
 
   private header(width: number, answer: string, theme: Theme): string[] {

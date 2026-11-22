@@ -497,6 +497,8 @@ export class NativeContentIndex {
           children: [content], contentContainer: content,
           // This is a partial view: rebuilding the assistant would restore both panes.
           invalidate: () => content.invalidate(),
+          // A folded answer keeps Pi's truncation, abort or error notice visible (see FoldableBody).
+          ...(pane === "chat" ? { foldNotes: () => this.diagnostics.get(source) ?? [] } : {}),
         });
         views[pane] = view;
       }
