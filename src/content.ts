@@ -27,7 +27,8 @@ interface NativeContent extends Component {
 interface NativeAssistant extends Container {
   contentContainer: Container;
   hasToolCalls: boolean;
-  lastMessage?: { content: { type: string; text?: string; thinking?: string }[] };
+  isStreaming?: boolean;
+  lastMessage?: { content: { type: string; text?: string; thinking?: string }[]; stopReason?: string };
   contentIsStale?: boolean;
   buildContent?(message: NonNullable<NativeAssistant["lastMessage"]>): void;
   isCompacted?(): boolean;
@@ -102,6 +103,16 @@ function assistant(component: Component): NativeAssistant | undefined {
   return native;
 }
 
+/**
+ * With Answers only, an assistant's text is a final answer, shown in Conversation, only when Pi has finished the
+ * message without tool calls. Streaming, tool-using and unknown states, or no state at all, stay in Activity.
+ */
+function answerPane(source: NativeAssistant): Pane {
+  const finished = source.isStreaming !== true && !source.hasToolCalls;
+  const reason = source.lastMessage?.stopReason;
+  return finished && (reason === "stop" || reason === "length" || reason === "error" || reason === "aborted") ? "chat" : "activity";
+}
+
 /** Native rendering creates one child per visible text block or consecutive thinking run. */
 function forEachRun(source: NativeAssistant, visit: (kind: ContentKind) => void): void {
   let thinking = false;
@@ -127,6 +138,8 @@ interface Classified {
   content?: Component[];
   contentLength?: number;
   message?: unknown;
+  /** Pane of the assistant's text blocks when it was classified. */
+  textPane?: Pane;
   /** Linked panel inputs: its resolved owner and the panel parts shown as nested calls. */
   parent?: { id: string; owner?: NativeContent; parts?: Component[] };
 }
@@ -197,14 +210,21 @@ export class NativeContentIndex {
   private readonly expandedPanels = new WeakMap<Component, Component>();
   private readonly views = new WeakMap<NativeAssistant, Partial<Record<Pane, Container>>>();
   private readonly diagnostics = new WeakMap<NativeAssistant, Component[]>();
+  private readonly placement = new WeakMap<NativeAssistant, Pane>();
 
-  private pass?: { active: boolean; verified?: { children: Component[]; length: number; last?: Component; parts: number; revision: number; trees: boolean } };
+  private pass?: { active: boolean; verified?: { children: Component[]; length: number; last?: Component; parts: number; revision: number; trees: boolean; answers: boolean } };
 
   /**
    * With `nestedTrees` on, a parented output panel is split into the native parts of its nested calls, which Activity
    * shows as the caller's tree. Off, the panel stays one original entry beside its owner.
    */
-  constructor(private readonly source: Container, readonly nested = new NestedCalls(), readonly nestedTrees: () => boolean = () => true) {}
+  constructor(private readonly source: Container, readonly nested = new NestedCalls(), readonly nestedTrees: () => boolean = () => true,
+    private readonly answersOnly: () => boolean = () => false) {}
+
+  /** Where an assistant's text blocks go: Conversation, as in upstream, unless Answers only holds them back. */
+  private textPane(source: NativeAssistant): Pane {
+    return this.answersOnly() ? answerPane(source) : "chat";
+  }
 
   /**
    * Native history cannot change while Pi lays out one frame, so the panes of a pass
@@ -249,9 +269,9 @@ export class NativeContentIndex {
     const children = history.children;
     const verified = pass?.verified;
     if (verified && verified.children === children && verified.length === children.length && verified.last === children.at(-1) &&
-      verified.parts === this.source.children.length && verified.revision === this.nested.revision && verified.trees === this.nestedTrees()) return;
+      verified.parts === this.source.children.length && verified.revision === this.nested.revision && verified.trees === this.nestedTrees() && verified.answers === this.answersOnly()) return;
     this.verify(history);
-    if (pass) pass.verified = { children, length: children.length, last: children.at(-1), parts: this.source.children.length, revision: this.nested.revision, trees: this.nestedTrees() };
+    if (pass) pass.verified = { children, length: children.length, last: children.at(-1), parts: this.source.children.length, revision: this.nested.revision, trees: this.nestedTrees(), answers: this.answersOnly() };
   }
 
   /** Whether a classified block still has the native inputs its entries were built from. */
@@ -261,7 +281,7 @@ export class NativeContentIndex {
     if (block.content) {
       const children = component.contentContainer?.children;
       if (component.contentIsStale === true || children !== block.content || children.length !== block.contentLength ||
-        component.lastMessage !== block.message) return false;
+        component.lastMessage !== block.message || this.textPane(component) !== block.textPane) return false;
     }
     if (block.parent) {
       const owner = this.owners.get(block.parent.id);
@@ -347,7 +367,8 @@ export class NativeContentIndex {
     const block: Classified = { component, spacing, entries: [], toolCallId: native.toolCallId, parentId: parentOf(native), custom: native.customComponent };
     const message = assistant(component);
     if (message) {
-      block.entries = this.assistantEntries(message, spacing);
+      block.textPane = this.textPane(message);
+      block.entries = this.assistantEntries(message, spacing, block.textPane);
       block.content = message.contentContainer.children;
       block.contentLength = block.content.length;
       block.message = message.lastMessage;
@@ -416,7 +437,7 @@ export class NativeContentIndex {
     } };
   }
 
-  private assistantEntries(source: NativeAssistant, spacing: Component[]): ContentEntry[] {
+  private assistantEntries(source: NativeAssistant, spacing: Component[], textPane: Pane): ContentEntry[] {
     // Native rendering creates one child per visible text block or consecutive thinking run.
     // Match those children to semantic content before projecting; a Text diagnostic is not thinking.
     const runs: ContentKind[] = [];
@@ -431,13 +452,14 @@ export class NativeContentIndex {
       if ((kind === "thinking" && nameOf(child) !== "MouseRegion") || (kind === "dialogue" && nameOf(child) !== "Markdown")) {
         throw new Error("Pi's assistant rendering does not match its content metadata");
       }
-      groups[panes[kind]].push(...padding, child);
+      groups[kind === "dialogue" ? textPane : panes[kind]].push(...padding, child);
       if (kind === "system") diagnostics.push(child);
       padding = [];
     }
     if (slot < runs.length) throw new Error("Pi's assistant content layout is not supported");
     // Entries outlive one classification; search reads the current diagnostics.
     this.diagnostics.set(source, diagnostics);
+    this.placement.set(source, textPane);
     const views = this.views.get(source) ?? {};
     this.views.set(source, views);
     const result: ContentEntry[] = [];
@@ -459,11 +481,13 @@ export class NativeContentIndex {
       // Keep the array of unchanged views: their native render caches compare child identity.
       if (content.children.length !== parts.length || content.children.some((child, index) => child !== parts[index])) content.children = parts;
       result.push({
-        source, owner: source, component: view, kind: pane === "activity" ? "thinking" : runs.includes("dialogue") ? "dialogue" : "system", spacing, compact: true,
+        source, owner: source, component: view, kind: pane === "activity" ? "thinking" : runs.includes("dialogue") && textPane === "chat" ? "dialogue" : "system", spacing, compact: true,
         search: width => {
-          const kind = pane === "activity" ? "thinking" : "text";
-          const saved = (source.lastMessage?.content ?? []).filter(block => block.type === kind)
-            .map(block => kind === "text" ? block.text ?? "" : block.thinking ?? "").join("\n\n");
+          // Text held back from Conversation is searched and copied with Activity.
+          const moved = this.placement.get(source) === "activity";
+          const saved = (source.lastMessage?.content ?? [])
+            .filter(block => pane === "activity" ? block.type === "thinking" || (moved && block.type === "text") : !moved && block.type === "text")
+            .map(block => block.type === "thinking" ? block.thinking ?? "" : block.text ?? "").join("\n\n");
           return {
             label: pane === "activity" ? "Thinking" : "Assistant",
             text: [saved, ...(pane === "chat" ? (this.diagnostics.get(source) ?? []).map(child => searchText(child.render(width).join("\n"))) : [])].filter(Boolean).join("\n\n"),

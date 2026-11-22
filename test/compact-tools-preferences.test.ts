@@ -85,7 +85,7 @@ test.each([["groupTools", "on"], ["groupTools", null], ["nestedTree", 1], ["nest
 
 test("ships the compact side-by-side defaults", () => {
   expect(defaults).toMatchObject({
-    layout: "columns", side: "left", chatWidth: null, chatHeight: null, showTimestamps: true, showCopyButtons: true,
-    buttonStyle: "text", compactTools: true, groupTools: true, nestedTree: true, streamTools: true, streamDelay: 5,
+    layout: "columns", side: "right", chatWidth: null, chatHeight: null, showTimestamps: true, showCopyButtons: true,
+    answersOnly: true, buttonStyle: "text", compactTools: true, groupTools: true, nestedTree: true, streamTools: true, streamDelay: 5,
   });
 });

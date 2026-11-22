@@ -30,9 +30,9 @@ test("a fresh install starts side by side with compact, streaming tools and text
     const frames = JSON.parse(await readFile(path.join(cwd, "stream-observation.json"), "utf8")) as Record<string, string[]>;
     const rows = (name: string): string[] => frames[name];
     const body = (name: string): string => rows(name).join("\n");
-    // Conversation on the left, Activity on the right, text buttons, streamed full cards.
+    // Activity on the left, Conversation on the right, text buttons, streamed full cards.
     const header = rows("running").find(line => line.includes("Conversation") && line.includes("Activity"))!;
-    expect(header.indexOf("Conversation")).toBeLessThan(header.indexOf("Activity"));
+    expect(header.indexOf("Activity")).toBeLessThan(header.indexOf("Conversation"));
     expect(body("running")).toContain("[Settings]");
     expect(body("running")).toContain("[Full tools]");
     expect(body("running")).toContain("NATIVE-HEADER-A");
